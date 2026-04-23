@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { hasSupabase, cloudLoad, cloudSave, cloudSubscribe } from "./supabase";
+import { hasSupabase, cloudLoad, cloudSave, cloudSubscribe, signInWithGoogle, supabaseSignOut, getCurrentSession, onAuthChange, ALLOWED_EMAIL_DOMAIN } from "./supabase";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const nowISO = () => new Date().toISOString();
@@ -164,37 +164,45 @@ function GoogleIcon({size=18}){
   );
 }
 
-function AuthScreen({data, save, setCurrentUserId}) {
-  const [picker, setPicker] = useState(false);
-  const [useOther, setUseOther] = useState(false);
-  const [f, setF] = useState({});
+function AuthScreen({ data, save, authError, setAuthError }) {
+  const [keyOk, setKeyOk] = useState(() => sessionStorage.getItem('divdesign_keyok') === '1');
+  const [keyInput, setKeyInput] = useState('');
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const withGoogle = async (user) => {
+  useEffect(() => { if (authError) setErr(authError); }, [authError]);
+
+  const validateKey = () => {
+    setErr(''); setAuthError && setAuthError('');
+    const expected = (data.accessKey || '').trim();
+    if (!expected) return setErr("Aucune clé d'accès n'est configurée. Contactez l'administrateur.");
+    if (keyInput.trim() === expected) {
+      sessionStorage.setItem('divdesign_keyok', '1');
+      setKeyOk(true);
+    } else {
+      setErr("Clé d'accès incorrecte.");
+    }
+  };
+
+  const signIn = async () => {
+    setErr(''); setAuthError && setAuthError('');
+    if (!hasSupabase) {
+      setErr("Supabase n'est pas configuré. Remplis VITE_SUPABASE_URL et VITE_SUPABASE_ANON_KEY dans .env.local puis redémarre.");
+      return;
+    }
     setLoading(true);
-    await new Promise(r => setTimeout(r, 550));
-    save({...data, currentUserId: user.id});
-    setCurrentUserId(user.id);
+    const { error } = await signInWithGoogle();
+    if (error) { setLoading(false); setErr(error.message || 'Échec de la connexion Google.'); }
+    // On success, le navigateur est redirigé vers Google.
   };
 
-  const pickExisting = (u) => withGoogle(u);
-
-  const signInOther = () => {
+  const resetKey = () => {
+    sessionStorage.removeItem('divdesign_keyok');
+    setKeyOk(false);
+    setKeyInput('');
     setErr('');
-    if (!f.name?.trim()) return setErr('Entre ton nom.');
-    if (!f.email?.trim() || !f.email.includes('@')) return setErr('Email invalide.');
-    const email = f.email.trim().toLowerCase();
-    const existing = data.users.find(u => u.email.toLowerCase() === email);
-    if (existing) return withGoogle(existing);
-    const isFirst = data.users.length === 0;
-    const user = {id:uid(),name:f.name.trim(),email,role: isFirst ? 'Admin' : 'Membre',createdAt:nowISO(),provider:'google'};
-    const d2 = {...data, users:[...data.users, user], currentUserId: user.id};
-    save(d2);
-    setCurrentUserId(user.id);
+    setAuthError && setAuthError('');
   };
-
-  const openPicker = () => { setPicker(true); setUseOther(data.users.length === 0); setErr(''); setF({}); };
 
   return (
     <div style={{height:'100vh',display:'flex',background:C.bgTint,fontFamily:"'Inter',system-ui,sans-serif",color:C.text}}>
@@ -222,76 +230,60 @@ function AuthScreen({data, save, setCurrentUserId}) {
       </div>
 
       <div style={{width:480,background:C.bg,padding:'48px 48px',display:'flex',flexDirection:'column',justifyContent:'center',overflowY:'auto'}}>
-        <h1 style={{fontSize:26,fontWeight:800,letterSpacing:'-0.6px',marginBottom:8}}>Bienvenue</h1>
-        <p style={{color:C.muted,fontSize:13.5,marginBottom:32,lineHeight:1.55}}>Connectez-vous avec votre compte Google pour accéder à votre espace design.</p>
-
-        <button onClick={openPicker} disabled={loading} style={{background:C.bg,color:'#1f1f1f',border:`1px solid #dadce0`,borderRadius:10,padding:'13px 16px',fontSize:14,fontWeight:600,cursor:loading?'wait':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:12,boxShadow:'0 1px 2px rgba(0,0,0,0.05)',transition:'all .15s',fontFamily:"'Inter','Roboto',sans-serif"}}
-          onMouseEnter={e=>!loading && (e.currentTarget.style.background='#f8f9fa')}
-          onMouseLeave={e=>!loading && (e.currentTarget.style.background=C.bg)}>
-          <GoogleIcon size={18}/>
-          {loading ? 'Connexion…' : 'Continuer avec Google'}
-        </button>
-
-        <div style={{marginTop:24,fontSize:11.5,color:C.muted,textAlign:'center',lineHeight:1.6}}>
-          En vous connectant, vous acceptez les conditions d'utilisation<br/>et la politique de confidentialité de DIV Design.
-        </div>
-      </div>
-
-      {picker && <div style={{position:'fixed',inset:0,background:'rgba(32,33,36,0.45)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:200,backdropFilter:'blur(4px)'}} onClick={()=>!loading && setPicker(false)}>
-        <div onClick={e=>e.stopPropagation()} style={{background:C.bg,borderRadius:12,width:420,maxHeight:'85vh',overflow:'hidden',boxShadow:'0 25px 60px rgba(0,0,0,0.25)',fontFamily:"'Inter','Roboto',sans-serif",display:'flex',flexDirection:'column'}}>
-          <div style={{padding:'28px 28px 12px'}}>
-            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:18}}>
-              <GoogleIcon size={22}/>
-              <span style={{fontSize:14,fontWeight:600,color:'#5f6368'}}>Se connecter</span>
+        {!keyOk ? (
+          <>
+            <div style={{display:'inline-flex',alignItems:'center',gap:8,background:C.bgTint,border:`1px solid ${C.borderSoft}`,borderRadius:999,padding:'5px 12px',fontSize:11.5,fontWeight:600,color:C.primary,alignSelf:'flex-start',marginBottom:16}}>
+              <Icon n="lock" s={13} c={C.primary}/> Étape 1 / 2
             </div>
-            <div style={{fontSize:22,color:'#202124',fontWeight:400,lineHeight:1.3,marginBottom:6}}>{useOther ? 'Utiliser votre compte Google' : 'Choisir un compte'}</div>
-            <div style={{fontSize:13.5,color:'#5f6368'}}>{useOther ? 'pour continuer sur DIV Design' : 'pour accéder à DIV Design'}</div>
-          </div>
+            <h1 style={{fontSize:26,fontWeight:800,letterSpacing:'-0.6px',marginBottom:8}}>Clé d'accès</h1>
+            <p style={{color:C.muted,fontSize:13.5,marginBottom:24,lineHeight:1.55}}>Entrez la clé d'accès de votre équipe pour débloquer la connexion Google.</p>
 
-          {!useOther && <div style={{flex:1,overflowY:'auto',borderTop:`1px solid #e8eaed`,marginTop:20}}>
-            {data.users.length === 0 && (
-              <div style={{padding:'28px 28px',textAlign:'center',color:'#5f6368',fontSize:13}}>Aucun compte enregistré sur cet appareil.</div>
-            )}
-            {data.users.map(u => (
-              <div key={u.id} onClick={()=>!loading && pickExisting(u)} style={{padding:'14px 28px',display:'flex',alignItems:'center',gap:14,cursor:loading?'wait':'pointer',borderBottom:`1px solid #f1f3f4`,transition:'background .15s'}}
-                onMouseEnter={e=>e.currentTarget.style.background='#f8f9fa'}
-                onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                <div style={{width:34,height:34,borderRadius:'50%',background:C.primary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,fontWeight:600,flexShrink:0}}>
-                  {u.name.split(' ').map(p=>p[0]).slice(0,2).join('').toUpperCase()}
-                </div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:14,color:'#202124',fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{u.name}</div>
-                  <div style={{fontSize:12,color:'#5f6368',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{u.email}</div>
-                </div>
-              </div>
-            ))}
-            <div onClick={()=>{setUseOther(true);setErr('');}} style={{padding:'14px 28px',display:'flex',alignItems:'center',gap:14,cursor:'pointer',transition:'background .15s'}}
-              onMouseEnter={e=>e.currentTarget.style.background='#f8f9fa'}
-              onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-              <div style={{width:34,height:34,borderRadius:'50%',background:'#f1f3f4',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,color:'#5f6368',flexShrink:0}}>+</div>
-              <div style={{fontSize:14,color:'#202124'}}>Utiliser un autre compte</div>
-            </div>
-          </div>}
+            <Field label="Clé d'accès" value={keyInput} onChange={setKeyInput} type="password" placeholder="Ex: DIV-2026"/>
 
-          {useOther && <div style={{padding:'20px 28px 8px',display:'flex',flexDirection:'column',gap:14}}>
-            <Field label="Nom" value={f.name||''} onChange={v=>setF({...f,name:v})} placeholder="Ex: Marie Dupont"/>
-            <Field label="Email" value={f.email||''} onChange={v=>setF({...f,email:v})} type="email" placeholder="vous@gmail.com"/>
-            {data.users.length === 0 && <div style={{fontSize:11.5,color:C.primary,background:C.bgTint,padding:'8px 12px',borderRadius:8,lineHeight:1.5}}>Ce premier compte deviendra automatiquement administrateur.</div>}
-            {err && <div style={{padding:'8px 12px',background:C.dangerBg,color:C.danger,borderRadius:8,fontSize:12.5,fontWeight:500,display:'flex',alignItems:'center',gap:8}}>
+            {err && <div style={{marginTop:14,padding:'10px 12px',background:C.dangerBg,color:C.danger,borderRadius:8,fontSize:12.5,fontWeight:500,display:'flex',alignItems:'center',gap:8}}>
               <Icon n="alertCircle" s={14} c={C.danger}/>{err}
             </div>}
-          </div>}
 
-          <div style={{padding:'16px 28px 22px',display:'flex',justifyContent:'space-between',alignItems:'center',borderTop:`1px solid #e8eaed`,marginTop:useOther?12:0}}>
-            {useOther && data.users.length > 0
-              ? <button onClick={()=>{setUseOther(false);setErr('');}} disabled={loading} style={{background:'none',border:'none',color:C.primary,fontSize:13.5,fontWeight:600,cursor:'pointer',padding:'8px 12px',borderRadius:6}}>← Retour</button>
-              : <span/>}
-            {useOther
-              ? <button onClick={signInOther} disabled={loading} style={{background:C.primary,color:'#fff',border:'none',borderRadius:6,padding:'9px 20px',fontSize:13.5,fontWeight:600,cursor:loading?'wait':'pointer'}}>{loading?'Connexion…':'Suivant'}</button>
-              : <button onClick={()=>setPicker(false)} disabled={loading} style={{background:'none',border:'none',color:C.primary,fontSize:13.5,fontWeight:600,cursor:'pointer',padding:'8px 12px',borderRadius:6}}>Annuler</button>}
-          </div>
-        </div>
-      </div>}
+            <button onClick={validateKey} style={{marginTop:20,background:C.primary,color:'#fff',border:'none',borderRadius:10,padding:'12px',fontSize:14,fontWeight:600,cursor:'pointer',boxShadow:'0 2px 8px rgba(81,0,255,0.25)'}}>
+              Valider
+            </button>
+
+            <div style={{marginTop:20,fontSize:11.5,color:C.muted,lineHeight:1.6}}>
+              La clé vous est communiquée par votre administrateur. Elle est stockée de façon sécurisée et peut être modifiée depuis les paramètres admin.
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{display:'inline-flex',alignItems:'center',gap:8,background:C.successBg,border:`1px solid ${C.success}`,borderRadius:999,padding:'5px 12px',fontSize:11.5,fontWeight:600,color:C.success,alignSelf:'flex-start',marginBottom:16}}>
+              <Icon n="check" s={13} c={C.success}/> Étape 2 / 2 · Clé validée
+            </div>
+            <h1 style={{fontSize:26,fontWeight:800,letterSpacing:'-0.6px',marginBottom:8}}>Connexion Google</h1>
+            <p style={{color:C.muted,fontSize:13.5,marginBottom:28,lineHeight:1.55}}>
+              Connectez-vous avec votre compte Google <strong style={{color:C.text}}>@{ALLOWED_EMAIL_DOMAIN}</strong>.
+              Les autres domaines ne sont pas autorisés.
+            </p>
+
+            <button onClick={signIn} disabled={loading} style={{background:C.bg,color:'#1f1f1f',border:`1px solid #dadce0`,borderRadius:10,padding:'13px 16px',fontSize:14,fontWeight:600,cursor:loading?'wait':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:12,boxShadow:'0 1px 2px rgba(0,0,0,0.05)',transition:'all .15s',fontFamily:"'Inter','Roboto',sans-serif"}}
+              onMouseEnter={e=>!loading && (e.currentTarget.style.background='#f8f9fa')}
+              onMouseLeave={e=>!loading && (e.currentTarget.style.background=C.bg)}>
+              <GoogleIcon size={18}/>
+              {loading ? 'Redirection…' : 'Continuer avec Google'}
+            </button>
+
+            {err && <div style={{marginTop:16,padding:'10px 12px',background:C.dangerBg,color:C.danger,borderRadius:8,fontSize:12.5,fontWeight:500,display:'flex',alignItems:'flex-start',gap:8}}>
+              <Icon n="alertCircle" s={14} c={C.danger}/><span>{err}</span>
+            </div>}
+
+            <button onClick={resetKey} style={{marginTop:20,background:'none',border:'none',color:C.muted,fontSize:12.5,cursor:'pointer',textAlign:'left',padding:0,alignSelf:'flex-start'}}>
+              ← Saisir une autre clé
+            </button>
+
+            <div style={{marginTop:24,fontSize:11.5,color:C.muted,lineHeight:1.6}}>
+              En continuant, vous acceptez les conditions d'utilisation et la politique de confidentialité de DIV Design.
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -316,6 +308,10 @@ export default function App(){
   const remoteUpdatedRef = useRef(null);
   const saveTimerRef = useRef(null);
   const lastSavedRef = useRef('');
+  const dataRef = useRef(null);
+  const pendingSessionUserRef = useRef(null);
+  const handledSessionRef = useRef(false);
+  const [authError, setAuthError] = useState('');
 
   useEffect(()=>{
     let cancelled = false;
@@ -341,11 +337,14 @@ export default function App(){
         }
       }
       if (cancelled) return;
-      setData({ ...initial, currentUserId: null });
-      lastSavedRef.current = JSON.stringify(stripSession(initial));
+      const withDefaults = { ...SEED, ...initial };
+      setData({ ...withDefaults, currentUserId: null });
+      lastSavedRef.current = JSON.stringify(stripSession(withDefaults));
     })();
     return () => { cancelled = true; };
   },[]);
+
+  useEffect(() => { dataRef.current = data; }, [data]);
 
   // Realtime sync: when another client updates the cloud state, refresh local
   useEffect(() => {
@@ -378,10 +377,76 @@ export default function App(){
     }, 400);
   };
 
+  // ──────── Supabase Auth (Google OAuth + domain whitelist) ────────
+
+  const processSignedInUser = async (authUser) => {
+    const email = (authUser.email || '').toLowerCase();
+    if (!email.endsWith(`@${ALLOWED_EMAIL_DOMAIN}`)) {
+      await supabaseSignOut();
+      sessionStorage.removeItem('divdesign_keyok');
+      handledSessionRef.current = false;
+      setAuthError(`Seuls les comptes @${ALLOWED_EMAIL_DOMAIN} sont autorisés.`);
+      return;
+    }
+    const d = dataRef.current;
+    if (!d) return;
+    const existing = d.users.find(u => u.email.toLowerCase() === email);
+    if (existing) {
+      if (existing.avatarUrl !== authUser.user_metadata?.avatar_url) {
+        save({ ...d, users: d.users.map(u => u.id === existing.id ? { ...u, avatarUrl: authUser.user_metadata?.avatar_url || u.avatarUrl, name: authUser.user_metadata?.full_name || u.name } : u) });
+      }
+      setCurrentUserId(existing.id);
+      return;
+    }
+    const isFirst = d.users.length === 0;
+    const user = {
+      id: uid(),
+      name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || email.split('@')[0],
+      email,
+      role: isFirst ? 'Admin' : 'Membre',
+      createdAt: nowISO(),
+      provider: 'google',
+      avatarUrl: authUser.user_metadata?.avatar_url || null,
+    };
+    save({ ...d, users: [...d.users, user] });
+    setCurrentUserId(user.id);
+  };
+
+  useEffect(() => {
+    if (!hasSupabase) return;
+    const tryProcess = async (session) => {
+      if (!session?.user || handledSessionRef.current) return;
+      if (!dataRef.current) {
+        pendingSessionUserRef.current = session.user;
+        return;
+      }
+      handledSessionRef.current = true;
+      await processSignedInUser(session.user);
+    };
+    getCurrentSession().then(tryProcess);
+    const unsub = onAuthChange((event, session) => {
+      if (event === 'SIGNED_IN') tryProcess(session);
+      else if (event === 'SIGNED_OUT') {
+        handledSessionRef.current = false;
+        pendingSessionUserRef.current = null;
+        setCurrentUserId(null);
+      }
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    if (!data || !pendingSessionUserRef.current || handledSessionRef.current) return;
+    const u = pendingSessionUserRef.current;
+    pendingSessionUserRef.current = null;
+    handledSessionRef.current = true;
+    processSignedInUser(u);
+  }, [data]);
+
   if(!data) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:C.bgTint,color:C.muted,fontFamily:'Inter,sans-serif'}}>Chargement…</div>;
 
   const currentUser = data.users.find(u=>u.id===currentUserId);
-  if(!currentUser) return <AuthScreen data={data} setData={setData} save={save} setCurrentUserId={setCurrentUserId}/>;
+  if(!currentUser) return <AuthScreen data={data} save={save} authError={authError} setAuthError={setAuthError}/>;
 
   const userById = id => data.users.find(u=>u.id===id);
   const proj = data.projects.find(p=>p.id===pid);
@@ -391,7 +456,13 @@ export default function App(){
   const canReview = isAdmin || currentUser.role==='Dev';
 
   const navTo=(s,p=null,v=null)=>{setScreen(s);if(p!==null)setPid(p);if(v!==null)setVid(v);setNotifOpen(false);setUserMenu(false);};
-  const logout = () => {save({...data, currentUserId: null});setCurrentUserId(null);setScreen('dash');};
+  const logout = async () => {
+    if (hasSupabase) await supabaseSignOut();
+    sessionStorage.removeItem('divdesign_keyok');
+    handledSessionRef.current = false;
+    setCurrentUserId(null);
+    setScreen('dash');
+  };
 
   // ─── Notifications helpers ───
   const addNotif = (d2, userIds, type, text, projectId, versionId) => {

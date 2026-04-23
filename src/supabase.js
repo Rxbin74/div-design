@@ -6,8 +6,17 @@ const ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
 export const hasSupabase = Boolean(URL && ANON);
 
 export const supabase = hasSupabase
-  ? createClient(URL, ANON, { auth: { persistSession: false } })
+  ? createClient(URL, ANON, {
+      auth: {
+        persistSession: true,
+        detectSessionInUrl: true,
+        autoRefreshToken: true,
+        flowType: 'pkce',
+      },
+    })
   : null;
+
+export const ALLOWED_EMAIL_DOMAIN = 'divprotocol.com';
 
 const TABLE = 'divdesign_state';
 const ROW_ID = 1;
@@ -47,4 +56,34 @@ export function cloudSubscribe(onChange) {
       payload => { if (payload.new?.data) onChange(payload.new.data, payload.new.updated_at); })
     .subscribe();
   return () => { supabase.removeChannel(ch); };
+}
+
+// ──────── Auth (Google OAuth) ────────
+
+export async function signInWithGoogle() {
+  if (!supabase) return { error: new Error('Supabase non configuré') };
+  return await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo: window.location.origin,
+      queryParams: { prompt: 'select_account', hd: ALLOWED_EMAIL_DOMAIN },
+    },
+  });
+}
+
+export async function supabaseSignOut() {
+  if (!supabase) return;
+  try { await supabase.auth.signOut(); } catch {}
+}
+
+export async function getCurrentSession() {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getSession();
+  return data?.session ?? null;
+}
+
+export function onAuthChange(cb) {
+  if (!supabase) return () => {};
+  const { data } = supabase.auth.onAuthStateChange((event, session) => cb(event, session));
+  return () => data.subscription.unsubscribe();
 }
