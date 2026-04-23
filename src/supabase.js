@@ -232,7 +232,7 @@ function flattenData(data) {
         comments.push({
           id: c.id,
           version_id: v.id,
-          user_id: safeUuidOrNull(c.userId || c.createdBy),
+          user_id: safeUuidOrNull(c.userId || c.authorId || c.createdBy),
           text: c.text || '',
           resolved: !!c.resolved,
           created_at: iso(c.createdAt),
@@ -242,7 +242,7 @@ function flattenData(data) {
           replies.push({
             id: r.id,
             comment_id: c.id,
-            user_id: safeUuidOrNull(r.userId || r.createdBy),
+            user_id: safeUuidOrNull(r.userId || r.authorId || r.createdBy),
             text: r.text || '',
             created_at: iso(r.createdAt),
             updated_at: new Date().toISOString(),
@@ -315,10 +315,10 @@ export async function updateAccessKey(value) {
     .from(TABLES.settings)
     .update({ access_key: value, updated_at: new Date().toISOString() })
     .eq('id', 1)
-    .select('access_key')
-    .single();
+    .select('access_key');
   if (error) return { ok: false, reason: error.message };
-  return { ok: true, accessKey: data?.access_key ?? value };
+  if (!data || data.length === 0) return { ok: false, reason: "Aucune ligne app_settings mise à jour (droits admin requis)." };
+  return { ok: true, accessKey: data[0]?.access_key ?? value };
 }
 
 export function subscribeAllTables(onChange) {
