@@ -32,6 +32,14 @@ const TABLES = {
 const iso = v => (v ? new Date(v).toISOString() : new Date().toISOString());
 const uniq = arr => [...new Set(arr.filter(Boolean))];
 const toArray = v => (Array.isArray(v) ? v : []);
+const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const isUuid = v => typeof v === 'string' && uuidRe.test(v);
+const safeUuidOrNull = v => (isUuid(v) ? v : null);
+const safeDate = v => {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isNaN(+d) ? null : d.toISOString().slice(0, 10);
+};
 
 export async function fetchAppState() {
   if (!supabase) return null;
@@ -173,8 +181,8 @@ async function deleteMissing(table, keepIds) {
 
 function flattenData(data) {
   const profiles = toArray(data.users).map(u => ({
-    id: u.id,
-    auth_user_id: u.authUserId || u.id,
+    id: isUuid(u.id) ? u.id : crypto.randomUUID(),
+    auth_user_id: isUuid(u.authUserId) ? u.authUserId : (isUuid(u.id) ? u.id : crypto.randomUUID()),
     name: u.name,
     email: (u.email || '').toLowerCase(),
     role: u.role || 'Membre',
@@ -208,7 +216,7 @@ function flattenData(data) {
         image: v.image || null,
         status: v.status || 'Brouillon',
         changelog: Array.isArray(v.changelog) ? v.changelog : [],
-        author_id: v.authorId || null,
+        author_id: safeUuidOrNull(v.authorId || v.createdBy),
         created_at: iso(v.createdAt),
         updated_at: new Date().toISOString(),
       });
@@ -216,7 +224,7 @@ function flattenData(data) {
         comments.push({
           id: c.id,
           version_id: v.id,
-          user_id: c.userId || null,
+          user_id: safeUuidOrNull(c.userId || c.createdBy),
           text: c.text || '',
           resolved: !!c.resolved,
           created_at: iso(c.createdAt),
@@ -226,7 +234,7 @@ function flattenData(data) {
           replies.push({
             id: r.id,
             comment_id: c.id,
-            user_id: r.userId || null,
+            user_id: safeUuidOrNull(r.userId || r.createdBy),
             text: r.text || '',
             created_at: iso(r.createdAt),
             updated_at: new Date().toISOString(),
@@ -240,8 +248,8 @@ function flattenData(data) {
     id: m.id,
     project_id: m.projectId || null,
     title: m.title || 'Milestone',
-    start_date: m.startDate || null,
-    due_date: m.dueDate,
+    start_date: safeDate(m.startDate),
+    due_date: safeDate(m.dueDate) || new Date().toISOString().slice(0, 10),
     completed: !!m.completed,
     created_at: iso(m.createdAt),
     updated_at: new Date().toISOString(),
@@ -249,7 +257,7 @@ function flattenData(data) {
 
   const notifications = toArray(data.notifications).map(n => ({
     id: n.id,
-    user_id: n.userId || null,
+    user_id: safeUuidOrNull(n.userId),
     text: n.text || '',
     read: !!n.read,
     type: n.type || null,
@@ -264,8 +272,13 @@ function flattenData(data) {
 export async function persistAppState(data) {
   if (!supabase) return { ok: false, reason: 'no-config' };
   const flat = flattenData(data);
+  const warnings = [];
   try {
-    await upsertRows(TABLES.settings, [{ id: 1, access_key: data.accessKey || 'DIV-2026', updated_at: new Date().toISOString() }]);
+    try {
+      await upsertRows(TABLES.settings, [{ id: 1, access_key: data.accessKey || 'DIV-2026', updated_at: new Date().toISOString() }]);
+    } catch (e) {
+      warnings.push(`settings: ${e.message}`);
+    }
     await upsertRows(TABLES.profiles, flat.profiles);
     await upsertRows(TABLES.projects, flat.projects);
     await upsertRows(TABLES.versions, flat.versions);
@@ -281,7 +294,7 @@ export async function persistAppState(data) {
     await deleteMissing(TABLES.roadmap, flat.roadmap.map(r => r.id));
     await deleteMissing(TABLES.projects, flat.projects.map(r => r.id));
     await deleteMissing(TABLES.profiles, flat.profiles.map(r => r.id));
-    return { ok: true };
+    return { ok: true, warnings };
   } catch (error) {
     console.warn('[supabase] persistAppState error:', error.message);
     return { ok: false, reason: error.message };

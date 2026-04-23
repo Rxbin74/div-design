@@ -368,6 +368,7 @@ export default function App(){
     saveTimerRef.current = setTimeout(async () => {
       const res = await persistAppState(persisted);
       if (!res?.ok) console.warn('[supabase] persist failed:', res?.reason);
+      if (res?.warnings?.length) console.warn('[supabase] persist warnings:', res.warnings.join(' | '));
       else remoteUpdatedRef.current = new Date().toISOString();
     }, 400);
   };
