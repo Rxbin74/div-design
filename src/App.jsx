@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { hasSupabase, fetchAppState, persistAppState, subscribeAllTables, signInWithGoogle, supabaseSignOut, getCurrentSession, onAuthChange, ALLOWED_EMAIL_DOMAIN, ensureProfileForAuthUser } from "./supabase";
+import { hasSupabase, fetchAppState, persistAppState, subscribeAllTables, signInWithGoogle, supabaseSignOut, getCurrentSession, onAuthChange, ALLOWED_EMAIL_DOMAIN, ensureProfileForAuthUser, updateAccessKey as updateAccessKeyRemote } from "./supabase";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const nowISO = () => new Date().toISOString();
@@ -118,6 +118,9 @@ function RoleBadge({role}){
 }
 function Avatar({user,size=32}){
   if(!user) return <span style={{width:size,height:size,borderRadius:'50%',background:'#E8E8E8',flexShrink:0}}/>;
+  if(user.avatarUrl){
+    return <img src={user.avatarUrl} alt={user.name||'avatar'} title={`${user.name} · ${user.role}`} style={{width:size,height:size,borderRadius:'50%',objectFit:'cover',display:'inline-block',flexShrink:0,border:'1px solid rgba(0,0,0,0.06)'}}/>;
+  }
   const c=RC[user.role]||C.muted;
   const initial=(user.name||'?').trim()[0].toUpperCase();
   return <span title={`${user.name} · ${user.role}`} style={{width:size,height:size,borderRadius:'50%',background:c,color:'#fff',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:size*.42,fontWeight:700,flexShrink:0}}>{initial}</span>;
@@ -553,9 +556,19 @@ export default function App(){
   const deleteMilestone = id => {if(!confirm('Supprimer cette échéance ?'))return;save({...data, roadmap:data.roadmap.filter(r=>r.id!==id)});setModal(null);};
 
   // ─── Access key ───
-  const updateAccessKey = () => {
+  const updateAccessKey = async () => {
     if(!form.key?.trim())return;
-    save({...data, accessKey:form.key.trim()});
+    const nextKey = form.key.trim();
+    if (hasSupabase) {
+      const res = await updateAccessKeyRemote(nextKey);
+      if (!res.ok) {
+        alert(`Impossible de sauvegarder la clé d'accès : ${res.reason}`);
+        return;
+      }
+      save({ ...data, accessKey: res.accessKey || nextKey });
+    } else {
+      save({...data, accessKey:nextKey});
+    }
     setModal(null);setForm({});
   };
 

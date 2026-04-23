@@ -85,6 +85,7 @@ export async function fetchAppState() {
     list.push({
       id: r.id,
       userId: r.user_id,
+      authorId: r.user_id,
       text: r.text,
       createdAt: r.created_at,
     });
@@ -97,6 +98,7 @@ export async function fetchAppState() {
     list.push({
       id: c.id,
       userId: c.user_id,
+      authorId: c.user_id,
       text: c.text,
       resolved: !!c.resolved,
       createdAt: c.created_at,
@@ -114,10 +116,13 @@ export async function fetchAppState() {
       title: v.title,
       description: v.description,
       figmaLink: v.figma_link,
+      figmaUrl: v.figma_link,
       image: v.image,
+      previewUrl: v.image,
       status: v.status,
       changelog: Array.isArray(v.changelog) ? v.changelog : [],
       authorId: v.author_id,
+      createdBy: v.author_id,
       createdAt: v.created_at,
       comments: (commentsByVersion.get(v.id) || []).sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt)),
     });
@@ -129,7 +134,9 @@ export async function fetchAppState() {
     name: p.name,
     description: p.description,
     figmaLink: p.figma_link,
+    figmaUrl: p.figma_link,
     color: p.color,
+    ownerId: p.created_by,
     createdAt: p.created_at,
     versions: (versionsByProject.get(p.id) || []).sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt)),
   }));
@@ -200,8 +207,9 @@ function flattenData(data) {
       id: p.id,
       name: p.name,
       description: p.description || null,
-      figma_link: p.figmaLink || null,
+      figma_link: p.figmaLink || p.figmaUrl || null,
       color: p.color || null,
+      created_by: safeUuidOrNull(p.ownerId),
       created_at: iso(p.createdAt),
       updated_at: new Date().toISOString(),
     });
@@ -212,8 +220,8 @@ function flattenData(data) {
         number: v.number || 'v0',
         title: v.title || 'Version',
         description: v.description || null,
-        figma_link: v.figmaLink || null,
-        image: v.image || null,
+        figma_link: v.figmaLink || v.figmaUrl || null,
+        image: v.image || v.previewUrl || null,
         status: v.status || 'Brouillon',
         changelog: Array.isArray(v.changelog) ? v.changelog : [],
         author_id: safeUuidOrNull(v.authorId || v.createdBy),
@@ -299,6 +307,18 @@ export async function persistAppState(data) {
     console.warn('[supabase] persistAppState error:', error.message);
     return { ok: false, reason: error.message };
   }
+}
+
+export async function updateAccessKey(value) {
+  if (!supabase) return { ok: false, reason: 'no-config' };
+  const { data, error } = await supabase
+    .from(TABLES.settings)
+    .update({ access_key: value, updated_at: new Date().toISOString() })
+    .eq('id', 1)
+    .select('access_key')
+    .single();
+  if (error) return { ok: false, reason: error.message };
+  return { ok: true, accessKey: data?.access_key ?? value };
 }
 
 export function subscribeAllTables(onChange) {
