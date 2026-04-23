@@ -246,6 +246,20 @@ using (public.is_allowed_domain())
 with check (public.is_allowed_domain());
 
 -- ─────────────────────────────────────────────────────────────
+-- Grants (required in addition to RLS policies)
+-- ─────────────────────────────────────────────────────────────
+grant usage on schema public to authenticated;
+
+grant select, insert, update, delete on table public.app_settings to authenticated;
+grant select, insert, update, delete on table public.profiles to authenticated;
+grant select, insert, update, delete on table public.projects to authenticated;
+grant select, insert, update, delete on table public.versions to authenticated;
+grant select, insert, update, delete on table public.comments to authenticated;
+grant select, insert, update, delete on table public.comment_replies to authenticated;
+grant select, insert, update, delete on table public.roadmap_milestones to authenticated;
+grant select, insert, update, delete on table public.notifications to authenticated;
+
+-- ─────────────────────────────────────────────────────────────
 -- Migration from legacy JSON blob table `divdesign_state`
 -- ─────────────────────────────────────────────────────────────
 do $$
