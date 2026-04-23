@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { hasSupabase, cloudLoad, cloudSave, cloudSubscribe, signInWithGoogle, supabaseSignOut, getCurrentSession, onAuthChange, ALLOWED_EMAIL_DOMAIN } from "./supabase";
+import { hasSupabase, fetchAppState, persistAppState, subscribeAllTables, signInWithGoogle, supabaseSignOut, getCurrentSession, onAuthChange, ALLOWED_EMAIL_DOMAIN, ensureProfileForAuthUser } from "./supabase";
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const nowISO = () => new Date().toISOString();
@@ -164,7 +164,7 @@ function GoogleIcon({size=18}){
   );
 }
 
-function AuthScreen({ data, save, authError, setAuthError }) {
+function AuthScreen({ data, authError, setAuthError }) {
   const [keyOk, setKeyOk] = useState(() => sessionStorage.getItem('divdesign_keyok') === '1');
   const [keyInput, setKeyInput] = useState('');
   const [err, setErr] = useState('');
@@ -316,24 +316,15 @@ export default function App(){
   useEffect(()=>{
     let cancelled = false;
     (async () => {
-      let initial = null;
-      if (hasSupabase) {
+      let initial = SEED;
+      if (!hasSupabase) {
+        setAuthError("Supabase n'est pas configuré. L'application nécessite VITE_SUPABASE_URL et VITE_SUPABASE_ANON_KEY.");
+      } else {
         try {
-          const cloud = await cloudLoad();
-          if (cloud?.data) {
-            initial = cloud.data;
-            remoteUpdatedRef.current = cloud.updated_at;
-          }
+          const cloud = await fetchAppState();
+          if (cloud) initial = cloud;
         } catch (e) {
           console.warn('[supabase] initial load failed:', e);
-        }
-      }
-      if (!initial) {
-        try {
-          const raw = localStorage.getItem('divdesign-v1');
-          initial = raw ? JSON.parse(raw) : SEED;
-        } catch {
-          initial = SEED;
         }
       }
       if (cancelled) return;
@@ -346,16 +337,20 @@ export default function App(){
 
   useEffect(() => { dataRef.current = data; }, [data]);
 
-  // Realtime sync: when another client updates the cloud state, refresh local
+  // Realtime sync: when another client updates tables, refresh local state
   useEffect(() => {
     if (!hasSupabase) return;
-    const unsub = cloudSubscribe((newData, updatedAt) => {
-      if (remoteUpdatedRef.current === updatedAt) return;
-      remoteUpdatedRef.current = updatedAt;
-      const serialized = JSON.stringify(stripSession(newData));
-      if (serialized === lastSavedRef.current) return;
-      lastSavedRef.current = serialized;
-      setData(prev => ({ ...newData, currentUserId: prev?.currentUserId ?? null }));
+    const unsub = subscribeAllTables(async () => {
+      try {
+        const fresh = await fetchAppState();
+        if (!fresh) return;
+        const serialized = JSON.stringify(stripSession(fresh));
+        if (serialized === lastSavedRef.current) return;
+        lastSavedRef.current = serialized;
+        setData(prev => ({ ...fresh, currentUserId: prev?.currentUserId ?? null }));
+      } catch (e) {
+        console.warn('[supabase] realtime refresh failed:', e);
+      }
     });
     return unsub;
   }, []);
@@ -365,51 +360,38 @@ export default function App(){
   const save = d => {
     setData(d);
     const persisted = stripSession(d);
-    try { localStorage.setItem('divdesign-v1', JSON.stringify(persisted)); } catch {}
     if (!hasSupabase) return;
     const serialized = JSON.stringify(persisted);
     if (serialized === lastSavedRef.current) return;
     lastSavedRef.current = serialized;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
-      const res = await cloudSave(persisted);
-      if (res?.ok) remoteUpdatedRef.current = new Date().toISOString();
+      const res = await persistAppState(persisted);
+      if (!res?.ok) console.warn('[supabase] persist failed:', res?.reason);
+      else remoteUpdatedRef.current = new Date().toISOString();
     }, 400);
   };
 
   // ──────── Supabase Auth (Google OAuth + domain whitelist) ────────
 
   const processSignedInUser = async (authUser) => {
-    const email = (authUser.email || '').toLowerCase();
-    if (!email.endsWith(`@${ALLOWED_EMAIL_DOMAIN}`)) {
+    const { profile, error } = await ensureProfileForAuthUser(authUser);
+    if (error) {
       await supabaseSignOut();
       sessionStorage.removeItem('divdesign_keyok');
       handledSessionRef.current = false;
-      setAuthError(`Seuls les comptes @${ALLOWED_EMAIL_DOMAIN} sont autorisés.`);
+      setAuthError(error.message || `Seuls les comptes @${ALLOWED_EMAIL_DOMAIN} sont autorisés.`);
       return;
     }
-    const d = dataRef.current;
-    if (!d) return;
-    const existing = d.users.find(u => u.email.toLowerCase() === email);
-    if (existing) {
-      if (existing.avatarUrl !== authUser.user_metadata?.avatar_url) {
-        save({ ...d, users: d.users.map(u => u.id === existing.id ? { ...u, avatarUrl: authUser.user_metadata?.avatar_url || u.avatarUrl, name: authUser.user_metadata?.full_name || u.name } : u) });
+    setCurrentUserId(profile.id);
+    try {
+      const fresh = await fetchAppState();
+      if (fresh) {
+        const serialized = JSON.stringify(stripSession(fresh));
+        lastSavedRef.current = serialized;
+        setData(prev => ({ ...fresh, currentUserId: prev?.currentUserId ?? null }));
       }
-      setCurrentUserId(existing.id);
-      return;
-    }
-    const isFirst = d.users.length === 0;
-    const user = {
-      id: uid(),
-      name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || email.split('@')[0],
-      email,
-      role: isFirst ? 'Admin' : 'Membre',
-      createdAt: nowISO(),
-      provider: 'google',
-      avatarUrl: authUser.user_metadata?.avatar_url || null,
-    };
-    save({ ...d, users: [...d.users, user] });
-    setCurrentUserId(user.id);
+    } catch {}
   };
 
   useEffect(() => {
@@ -446,7 +428,7 @@ export default function App(){
   if(!data) return <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100vh',background:C.bgTint,color:C.muted,fontFamily:'Inter,sans-serif'}}>Chargement…</div>;
 
   const currentUser = data.users.find(u=>u.id===currentUserId);
-  if(!currentUser) return <AuthScreen data={data} save={save} authError={authError} setAuthError={setAuthError}/>;
+  if(!currentUser) return <AuthScreen data={data} authError={authError} setAuthError={setAuthError}/>;
 
   const userById = id => data.users.find(u=>u.id===id);
   const proj = data.projects.find(p=>p.id===pid);

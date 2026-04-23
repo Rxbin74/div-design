@@ -1,75 +1,62 @@
 # DIV Design — Gestionnaire de versions design
 
-Application web (React + Vite) permettant à une équipe design de versionner ses maquettes Figma, de demander des reviews, d'échanger des commentaires et de suivre une roadmap Gantt.
+Application web (React + Vite) pour versionner des maquettes design, collaborer en équipe et piloter une roadmap.
 
-## Fonctionnalités
+## Points clés
 
-- **Authentification Google** (picker simulé) — le premier compte créé devient Admin.
-- **Projets** : création, édition, suppression, couleur, lien Figma.
-- **Versions** : historique horodaté, changelog, aperçu image, statuts.
-- **Commentaires & réponses** avec résolution, notifications.
-- **Roadmap Gantt** full-height, avec vues Heure / Jour / Semaine / Mois.
-- **Persistance cloud** via Supabase (fallback `localStorage` si non configuré).
-- **Realtime** : chaque client est synchronisé via les events Postgres Changes.
+- **Base partagée obligatoire** : toutes les données métier sont stockées en **Supabase Postgres** (pas de source locale navigateur).
+- **Schéma normalisé** : `app_settings`, `profiles`, `projects`, `versions`, `comments`, `comment_replies`, `roadmap_milestones`, `notifications`.
+- **Auth Google réelle** via Supabase Auth, avec restriction domaine `@divprotocol.com`.
+- **Clé d’accès globale** stockée dans `app_settings`, visible identique pour tous les utilisateurs.
+- **Realtime multi-clients** sur toutes les tables via Postgres Changes.
 
 ## Prérequis
 
 - Node.js >= 18
-- npm (ou yarn / pnpm)
+- npm
+- Un projet Supabase configuré (schema SQL + provider Google)
 
 ## Installation
 
 ```bash
 npm install
-cp .env.example .env.local   # remplir avec les clés Supabase (optionnel)
-npm run dev
+cp .env.example .env.local
 ```
 
-L'app s'ouvre sur [http://localhost:5173](http://localhost:5173).
+Variables requises dans `.env.local` :
 
-> **Sans clés Supabase**, l'app fonctionne en local uniquement via `localStorage`.
+```env
+VITE_SUPABASE_URL=...
+VITE_SUPABASE_ANON_KEY=...
+```
 
-## Déploiement
+Lancement :
 
-Voir le guide complet : **[DEPLOYMENT.md](DEPLOYMENT.md)** — étapes GitHub / Vercel / Supabase avec branches `test` et `prod`.
+```bash
+npm run dev
+```
 
 ## Build
 
 ```bash
-npm run build    # sortie: dist/
-npm run preview  # prévisualisation du build
+npm run build
+npm run preview
 ```
 
-## Réinitialiser les données locales
+## Déploiement
 
-```js
-localStorage.removeItem('divdesign-v1');
-location.reload();
-```
+Guide complet : [DEPLOYMENT.md](DEPLOYMENT.md)
 
 ## Structure
 
 ```
 .
-├── index.html              # Entrée HTML + police Inter
-├── vite.config.js          # Configuration Vite
-├── vercel.json             # Configuration Vercel (SPA rewrites)
-├── .env.example            # Variables d'env Supabase
-├── DEPLOYMENT.md           # Guide de déploiement
+├── .env.example
+├── DEPLOYMENT.md
 ├── supabase/
-│   └── schema.sql          # Schéma SQL à exécuter dans Supabase
-├── public/
-│   └── favicon.svg
+│   └── schema.sql
 └── src/
-    ├── main.jsx            # Point d'entrée React
-    ├── App.jsx             # Application complète
-    └── supabase.js         # Client Supabase (load / save / realtime)
+    ├── App.jsx
+    ├── main.jsx
+    └── supabase.js
 ```
-
-## Stack
-
-- **React 18** + **Vite 5**
-- **Supabase** (Postgres + Realtime) pour la persistance cloud
-- **Vercel** pour l'hébergement (`prod` = branche de production, `test` = previews)
-- Styles en ligne (CSS-in-JS simple, sans dépendance)
-- Police **Inter** via Google Fonts

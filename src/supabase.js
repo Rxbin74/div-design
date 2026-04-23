@@ -18,44 +18,288 @@ export const supabase = hasSupabase
 
 export const ALLOWED_EMAIL_DOMAIN = 'divprotocol.com';
 
-const TABLE = 'divdesign_state';
-const ROW_ID = 1;
+const TABLES = {
+  settings: 'app_settings',
+  profiles: 'profiles',
+  projects: 'projects',
+  versions: 'versions',
+  comments: 'comments',
+  replies: 'comment_replies',
+  roadmap: 'roadmap_milestones',
+  notifications: 'notifications',
+};
 
-export async function cloudLoad() {
+const iso = v => (v ? new Date(v).toISOString() : new Date().toISOString());
+const uniq = arr => [...new Set(arr.filter(Boolean))];
+const toArray = v => (Array.isArray(v) ? v : []);
+
+export async function fetchAppState() {
   if (!supabase) return null;
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select('data, updated_at')
-    .eq('id', ROW_ID)
-    .maybeSingle();
-  if (error) {
-    console.warn('[supabase] load error:', error.message);
-    return null;
+  const [
+    settingsRes,
+    profilesRes,
+    projectsRes,
+    versionsRes,
+    commentsRes,
+    repliesRes,
+    roadmapRes,
+    notificationsRes,
+  ] = await Promise.all([
+    supabase.from(TABLES.settings).select('id,access_key').eq('id', 1).maybeSingle(),
+    supabase.from(TABLES.profiles).select('id,name,email,role,avatar_url,created_at'),
+    supabase.from(TABLES.projects).select('id,name,description,figma_link,color,created_at'),
+    supabase.from(TABLES.versions).select('id,project_id,number,title,description,figma_link,image,status,changelog,author_id,created_at'),
+    supabase.from(TABLES.comments).select('id,version_id,user_id,text,resolved,created_at'),
+    supabase.from(TABLES.replies).select('id,comment_id,user_id,text,created_at'),
+    supabase.from(TABLES.roadmap).select('id,project_id,title,start_date,due_date,completed,created_at'),
+    supabase.from(TABLES.notifications).select('id,user_id,text,read,type,meta,created_at'),
+  ]);
+
+  const errors = [settingsRes, profilesRes, projectsRes, versionsRes, commentsRes, repliesRes, roadmapRes, notificationsRes]
+    .map(r => r.error)
+    .filter(Boolean);
+  if (errors.length > 0) {
+    throw new Error(errors.map(e => e.message).join(' | '));
   }
-  return data || null;
+
+  const users = (profilesRes.data || []).map(p => ({
+    id: p.id,
+    name: p.name,
+    email: p.email,
+    role: p.role,
+    avatarUrl: p.avatar_url,
+    createdAt: p.created_at,
+  }));
+
+  const repliesByComment = new Map();
+  (repliesRes.data || []).forEach(r => {
+    const list = repliesByComment.get(r.comment_id) || [];
+    list.push({
+      id: r.id,
+      userId: r.user_id,
+      text: r.text,
+      createdAt: r.created_at,
+    });
+    repliesByComment.set(r.comment_id, list);
+  });
+
+  const commentsByVersion = new Map();
+  (commentsRes.data || []).forEach(c => {
+    const list = commentsByVersion.get(c.version_id) || [];
+    list.push({
+      id: c.id,
+      userId: c.user_id,
+      text: c.text,
+      resolved: !!c.resolved,
+      createdAt: c.created_at,
+      replies: (repliesByComment.get(c.id) || []).sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt)),
+    });
+    commentsByVersion.set(c.version_id, list);
+  });
+
+  const versionsByProject = new Map();
+  (versionsRes.data || []).forEach(v => {
+    const list = versionsByProject.get(v.project_id) || [];
+    list.push({
+      id: v.id,
+      number: v.number,
+      title: v.title,
+      description: v.description,
+      figmaLink: v.figma_link,
+      image: v.image,
+      status: v.status,
+      changelog: Array.isArray(v.changelog) ? v.changelog : [],
+      authorId: v.author_id,
+      createdAt: v.created_at,
+      comments: (commentsByVersion.get(v.id) || []).sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt)),
+    });
+    versionsByProject.set(v.project_id, list);
+  });
+
+  const projects = (projectsRes.data || []).map(p => ({
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    figmaLink: p.figma_link,
+    color: p.color,
+    createdAt: p.created_at,
+    versions: (versionsByProject.get(p.id) || []).sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt)),
+  }));
+
+  const roadmap = (roadmapRes.data || []).map(m => ({
+    id: m.id,
+    projectId: m.project_id,
+    title: m.title,
+    startDate: m.start_date,
+    dueDate: m.due_date,
+    completed: !!m.completed,
+    createdAt: m.created_at,
+  }));
+
+  const notifications = (notificationsRes.data || []).map(n => ({
+    id: n.id,
+    userId: n.user_id,
+    text: n.text,
+    read: !!n.read,
+    type: n.type,
+    meta: n.meta || {},
+    createdAt: n.created_at,
+  }));
+
+  return {
+    accessKey: settingsRes.data?.access_key || 'DIV-2026',
+    users,
+    projects,
+    roadmap,
+    notifications,
+  };
 }
 
-export async function cloudSave(appData) {
+async function upsertRows(table, rows, conflict = 'id') {
+  if (!rows.length) return;
+  const { error } = await supabase.from(table).upsert(rows, { onConflict: conflict });
+  if (error) throw error;
+}
+
+async function deleteMissing(table, keepIds) {
+  const { data: existing, error } = await supabase.from(table).select('id');
+  if (error) throw error;
+  const toDelete = (existing || []).map(r => r.id).filter(id => !keepIds.includes(id));
+  if (toDelete.length > 0) {
+    const { error: delErr } = await supabase.from(table).delete().in('id', toDelete);
+    if (delErr) throw delErr;
+  }
+}
+
+function flattenData(data) {
+  const profiles = toArray(data.users).map(u => ({
+    id: u.id,
+    auth_user_id: u.authUserId || u.id,
+    name: u.name,
+    email: (u.email || '').toLowerCase(),
+    role: u.role || 'Membre',
+    avatar_url: u.avatarUrl || null,
+    created_at: iso(u.createdAt),
+    updated_at: new Date().toISOString(),
+  }));
+
+  const projects = [];
+  const versions = [];
+  const comments = [];
+  const replies = [];
+  toArray(data.projects).forEach(p => {
+    projects.push({
+      id: p.id,
+      name: p.name,
+      description: p.description || null,
+      figma_link: p.figmaLink || null,
+      color: p.color || null,
+      created_at: iso(p.createdAt),
+      updated_at: new Date().toISOString(),
+    });
+    toArray(p.versions).forEach(v => {
+      versions.push({
+        id: v.id,
+        project_id: p.id,
+        number: v.number || 'v0',
+        title: v.title || 'Version',
+        description: v.description || null,
+        figma_link: v.figmaLink || null,
+        image: v.image || null,
+        status: v.status || 'Brouillon',
+        changelog: Array.isArray(v.changelog) ? v.changelog : [],
+        author_id: v.authorId || null,
+        created_at: iso(v.createdAt),
+        updated_at: new Date().toISOString(),
+      });
+      toArray(v.comments).forEach(c => {
+        comments.push({
+          id: c.id,
+          version_id: v.id,
+          user_id: c.userId || null,
+          text: c.text || '',
+          resolved: !!c.resolved,
+          created_at: iso(c.createdAt),
+          updated_at: new Date().toISOString(),
+        });
+        toArray(c.replies).forEach(r => {
+          replies.push({
+            id: r.id,
+            comment_id: c.id,
+            user_id: r.userId || null,
+            text: r.text || '',
+            created_at: iso(r.createdAt),
+            updated_at: new Date().toISOString(),
+          });
+        });
+      });
+    });
+  });
+
+  const roadmap = toArray(data.roadmap).map(m => ({
+    id: m.id,
+    project_id: m.projectId || null,
+    title: m.title || 'Milestone',
+    start_date: m.startDate || null,
+    due_date: m.dueDate,
+    completed: !!m.completed,
+    created_at: iso(m.createdAt),
+    updated_at: new Date().toISOString(),
+  }));
+
+  const notifications = toArray(data.notifications).map(n => ({
+    id: n.id,
+    user_id: n.userId || null,
+    text: n.text || '',
+    read: !!n.read,
+    type: n.type || null,
+    meta: n.meta || {},
+    created_at: iso(n.createdAt),
+    updated_at: new Date().toISOString(),
+  }));
+
+  return { profiles, projects, versions, comments, replies, roadmap, notifications };
+}
+
+export async function persistAppState(data) {
   if (!supabase) return { ok: false, reason: 'no-config' };
-  const { error } = await supabase
-    .from(TABLE)
-    .upsert({ id: ROW_ID, data: appData, updated_at: new Date().toISOString() }, { onConflict: 'id' });
-  if (error) {
-    console.warn('[supabase] save error:', error.message);
+  const flat = flattenData(data);
+  try {
+    await upsertRows(TABLES.settings, [{ id: 1, access_key: data.accessKey || 'DIV-2026', updated_at: new Date().toISOString() }]);
+    await upsertRows(TABLES.profiles, flat.profiles);
+    await upsertRows(TABLES.projects, flat.projects);
+    await upsertRows(TABLES.versions, flat.versions);
+    await upsertRows(TABLES.comments, flat.comments);
+    await upsertRows(TABLES.replies, flat.replies);
+    await upsertRows(TABLES.roadmap, flat.roadmap);
+    await upsertRows(TABLES.notifications, flat.notifications);
+
+    await deleteMissing(TABLES.notifications, flat.notifications.map(r => r.id));
+    await deleteMissing(TABLES.replies, flat.replies.map(r => r.id));
+    await deleteMissing(TABLES.comments, flat.comments.map(r => r.id));
+    await deleteMissing(TABLES.versions, flat.versions.map(r => r.id));
+    await deleteMissing(TABLES.roadmap, flat.roadmap.map(r => r.id));
+    await deleteMissing(TABLES.projects, flat.projects.map(r => r.id));
+    await deleteMissing(TABLES.profiles, flat.profiles.map(r => r.id));
+    return { ok: true };
+  } catch (error) {
+    console.warn('[supabase] persistAppState error:', error.message);
     return { ok: false, reason: error.message };
   }
-  return { ok: true };
 }
 
-export function cloudSubscribe(onChange) {
+export function subscribeAllTables(onChange) {
   if (!supabase) return () => {};
-  const ch = supabase
-    .channel('divdesign_state_changes')
-    .on('postgres_changes',
-      { event: '*', schema: 'public', table: TABLE, filter: `id=eq.${ROW_ID}` },
-      payload => { if (payload.new?.data) onChange(payload.new.data, payload.new.updated_at); })
-    .subscribe();
-  return () => { supabase.removeChannel(ch); };
+  const channel = supabase.channel('divdesign_all_tables');
+  uniq(Object.values(TABLES)).forEach(table => {
+    channel.on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table },
+      onChange
+    );
+  });
+  channel.subscribe();
+  return () => { supabase.removeChannel(channel); };
 }
 
 // ──────── Auth (Google OAuth) ────────
@@ -86,4 +330,57 @@ export function onAuthChange(cb) {
   if (!supabase) return () => {};
   const { data } = supabase.auth.onAuthStateChange((event, session) => cb(event, session));
   return () => data.subscription.unsubscribe();
+}
+
+export async function ensureProfileForAuthUser(authUser) {
+  if (!supabase || !authUser) return { error: new Error('missing auth user') };
+  const email = (authUser.email || '').toLowerCase();
+  if (!email.endsWith(`@${ALLOWED_EMAIL_DOMAIN}`)) {
+    return { error: new Error(`Seuls les comptes @${ALLOWED_EMAIL_DOMAIN} sont autorisés.`) };
+  }
+  const { data: existingByAuth, error: errAuth } = await supabase
+    .from(TABLES.profiles)
+    .select('id,name,email,role,avatar_url,created_at')
+    .eq('auth_user_id', authUser.id)
+    .maybeSingle();
+  if (errAuth) return { error: errAuth };
+  if (existingByAuth) return { profile: existingByAuth };
+
+  const { data: existingByEmail, error: errEmail } = await supabase
+    .from(TABLES.profiles)
+    .select('id,name,email,role,avatar_url,created_at')
+    .eq('email', email)
+    .maybeSingle();
+  if (errEmail) return { error: errEmail };
+  if (existingByEmail) {
+    const { data: patched, error: patchErr } = await supabase
+      .from(TABLES.profiles)
+      .update({
+        auth_user_id: authUser.id,
+        avatar_url: authUser.user_metadata?.avatar_url || existingByEmail.avatar_url,
+        name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || existingByEmail.name,
+      })
+      .eq('id', existingByEmail.id)
+      .select('id,name,email,role,avatar_url,created_at')
+      .single();
+    if (patchErr) return { error: patchErr };
+    return { profile: patched };
+  }
+
+  const { count } = await supabase.from(TABLES.profiles).select('*', { count: 'exact', head: true });
+  const role = !count || count === 0 ? 'Admin' : 'Membre';
+  const insertRow = {
+    auth_user_id: authUser.id,
+    name: authUser.user_metadata?.full_name || authUser.user_metadata?.name || email.split('@')[0],
+    email,
+    role,
+    avatar_url: authUser.user_metadata?.avatar_url || null,
+  };
+  const { data: created, error: createErr } = await supabase
+    .from(TABLES.profiles)
+    .insert(insertRow)
+    .select('id,name,email,role,avatar_url,created_at')
+    .single();
+  if (createErr) return { error: createErr };
+  return { profile: created };
 }
